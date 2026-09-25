@@ -1,0 +1,8 @@
+# Primary deployment: the daily job and the review app share one host (and one state.db).
+# Install with:  crontab deploy/crontab
+# 06:15 America/New_York, before reps start work. flock prevents overlapping runs.
+CRON_TZ=America/New_York
+15 6 * * * cd /opt/bellhaven-sync && flock -n /tmp/bellhaven-sync.lock /usr/bin/python3 -m bellhaven_sync run >> /var/log/bellhaven-sync/run.log 2>&1
+
+# Review app runs as a long-lived service (systemd unit or similar), e.g.:
+#   ExecStart=/usr/bin/python3 -m bellhaven_sync serve --host 127.0.0.1 --port 8765

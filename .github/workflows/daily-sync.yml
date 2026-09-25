@@ -1,0 +1,62 @@
+# Alternative to cron: run the daily job in GitHub Actions.
+# The decision ledger (state.db) must persist between runs, or already-decided proposals
+# would be re-queued. It lives on an orphan `sync-state` branch that this job reads and
+# writes back. The review app reads the same branch (or, better, point BH_DB_PATH at shared
+# storage such as a mounted volume) so that decisions and runs agree.
+name: bellhaven-daily-sync
+
+on:
+  schedule:
+    - cron: "15 10 * * *"   # 10:15 UTC = 06:15 America/New_York (EDT)
+  workflow_dispatch: {}
+
+concurrency:
+  group: bellhaven-sync     # never run two syncs at once
+  cancel-in-progress: false
+
+permissions:
+  contents: write           # push state.db back to the sync-state branch
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Unit tests
+        run: python -m unittest discover tests
+
+      - name: Restore decision ledger
+        run: |
+          mkdir -p data
+          if git fetch origin sync-state --depth=1; then
+            git show origin/sync-state:state.db > data/state.db
+          fi
+
+      - name: Scrape, match, queue proposals (read-only against the CRM)
+        env:
+          BH_API_TOKEN: ${{ secrets.BH_API_TOKEN }}
+        run: python -m bellhaven_sync run | tee run-summary.json
+
+      - name: Persist decision ledger
+        if: always()
+        run: |
+          cp data/state.db /tmp/state.db
+          git config user.name "bellhaven-sync-bot"
+          git config user.email "bellhaven-sync-bot@users.noreply.github.com"
+          git checkout --orphan sync-state-tmp
+          git rm -rf --cached . > /dev/null
+          cp /tmp/state.db state.db
+          git add state.db
+          git commit -m "state after run ${{ github.run_id }}"
+          git push -f origin HEAD:sync-state
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: run-summary
+          path: run-summary.json
